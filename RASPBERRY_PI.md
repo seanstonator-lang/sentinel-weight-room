@@ -6,6 +6,20 @@ The Pi serves both the React website and its API. SQLite records live in a persi
 
 ## Install and launch
 
+### Prepared bootable SD card
+
+If you received the prepared card, it already contains Raspberry Pi OS Lite (64-bit) and the application source in the boot partition. Insert it into a compatible Pi, connect a keyboard, monitor and Ethernet, and power it on. Complete the OS first-boot account setup. An internet connection is required to download Docker and build dependencies.
+
+Run:
+
+```sh
+sudo bash /boot/firmware/sentinel-weight-room/pi-install.sh
+```
+
+This copies the app to `/opt/sentinel-weight-room`, prompts for a server password and browser address, installs Docker from Debian packages, and starts the service. For a failed installation, retry with `sudo bash /opt/sentinel-weight-room/pi-install.sh`. No Wi-Fi password, SSH login or default staff credentials are preconfigured.
+
+### Install from GitHub
+
 Install Docker using the official Debian instructions for your Raspberry Pi OS release: https://docs.docker.com/engine/install/debian/ . Confirm `docker compose version` works. If your user cannot run Docker, prefix Docker commands with `sudo`.
 
 ```sh
