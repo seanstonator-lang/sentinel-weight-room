@@ -25,6 +25,8 @@ jobs:
       - run: npm ci
       - run: node --test server/server.test.mjs
       - run: npm run build
+        env:
+          VITE_PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
