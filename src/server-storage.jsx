@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import { mergeRecords } from './merge-records.js';
 
 async function request(path, options = {}) {
   const response = await fetch('/api' + path, { ...options, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, cache: 'no-store' });
   const body = await response.json();
-  if (!response.ok) throw new Error(body.error || 'Server unavailable.');
+  if (!response.ok) throw Object.assign(new Error(body.error || 'Server unavailable.'), { status: response.status });
   return body;
 }
 
@@ -17,6 +18,7 @@ export function ServerGate({ children }) {
     const cache = new Map(records.map(row => [row.key, row]));
     const readKeys = new Set();
     const revisions = new Map(records.map(row => [row.key, row.revision]));
+    const localValues = new Map(records.map(row => [row.key, row.value]));
     const queues = new Map();
     let failed = false;
     const guarded = async action => {
@@ -25,9 +27,22 @@ export function ServerGate({ children }) {
     };
     const mutate = (key, method, value) => {
       const pending = (queues.get(key) || Promise.resolve()).then(() => guarded(async () => {
-        const row = await request('/records/' + encodeURIComponent(key), { method, body: JSON.stringify({ value, revision: revisions.get(key) || 0 }) });
-        revisions.set(key, row.revision); cache.set(key, row);
-        return row;
+        const decode = text => text == null ? null : JSON.parse(text);
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const latest = cache.get(key) || { value: null, revision: 0 };
+          const merged = method === 'DELETE' ? undefined : JSON.stringify(mergeRecords(decode(localValues.get(key)), decode(value), decode(latest.value)));
+          try {
+            const row = await request('/records/' + encodeURIComponent(key), { method, body: JSON.stringify({ value: merged, revision: revisions.get(key) || 0 }) });
+            revisions.set(key, row.revision); cache.set(key, row);
+            localValues.set(key, method === 'DELETE' ? null : value);
+            return row;
+          } catch (error) {
+            if (error.status !== 409 || method === 'DELETE') throw error;
+            const current = await request('/records/' + encodeURIComponent(key));
+            revisions.set(key, current.revision); cache.set(key, current);
+          }
+        }
+        throw new Error('The record is busy. Reload before editing again.');
       }));
       queues.set(key, pending.catch(() => {}));
       return pending;

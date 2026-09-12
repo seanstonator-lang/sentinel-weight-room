@@ -4,3 +4,5 @@ dist/
 .tunnel.env
 data/
 backups/
+tests/.audit-app.mjs
+tests/.audit-storage.mjs

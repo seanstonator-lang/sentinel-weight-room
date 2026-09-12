@@ -394,12 +394,12 @@ const round5 = (n) => Math.max(0, Math.round(n / 5) * 5);
 
 function toMph(dist, unit, seconds) {
   if (!dist || !seconds) return 0;
-  const meters = unit === "yd" ? dist * 0.9144 : dist;
+  const meters = unit === "yd" ? dist * 0.9144 : unit === "ft" ? dist * 0.3048 : dist;
   return (meters / seconds) * 2.2369362921;
 }
 function toFps(dist, unit, seconds) {
   if (!dist || !seconds) return 0;
-  const feet = unit === "yd" ? dist * 3 : dist * 3.280839895;
+  const feet = unit === "yd" ? dist * 3 : unit === "ft" ? dist : dist * 3.280839895;
   return feet / seconds;
 }
 
@@ -1268,8 +1268,8 @@ function LibraryTab({ exercises, custom }) {
 const READINESS_Q = [
   { id: "sleep", label: "How did you sleep?", low: "Barely", high: "Great" },
   { id: "energy", label: "Energy right now?", low: "Empty", high: "Fired up" },
-  { id: "soreness", label: "How sore are you?", low: "Wrecked", high: "Fresh", invert: true },
-  { id: "stress", label: "Stress today?", low: "Maxed out", high: "Calm", invert: true },
+  { id: "soreness", label: "How sore are you?", low: "Wrecked", high: "Fresh" },
+  { id: "stress", label: "Stress today?", low: "Maxed out", high: "Calm" },
 ];
 
 function readinessScore(answers) {
@@ -1472,21 +1472,21 @@ function ExerciseBlock({ presc, meta, prevBest, myMax, onLog, onRest, cue }) {
     const r = rows[i];
     if (kind === "time") {
       const secs = parseFloat(r.secs);
-      if (!secs) return;
+      if (!Number.isFinite(secs) || secs <= 0) return;
       onLog({ exercise: presc.exercise, mode: "sprint", seconds: secs, dist, unit });
       if (dist) setRow(i, { note: `${toMph(dist, unit, secs).toFixed(1)} mph` });
     } else if (kind === "height") {
       const total = (parseFloat(r.ft) || 0) * 12 + (parseFloat(r.inch) || 0);
-      if (!total) return;
+      if (!Number.isFinite(total) || total <= 0) return;
       onLog({ exercise: presc.exercise, mode: "measure", value: total, unit: "in" });
       setRow(i, { note: fmtHeight(total) });
     } else if (kind === "reps") {
-      const reps = parseInt(r.reps, 10);
-      if (!reps) return;
+      const reps = Number(r.reps);
+      if (!Number.isInteger(reps) || reps <= 0) return;
       onLog({ exercise: presc.exercise, mode: "reps", reps, rpe: r.rpe });
     } else {
-      const w = parseFloat(r.weight), reps = parseInt(r.reps, 10);
-      if (!w || !reps) return;
+      const w = parseFloat(r.weight), reps = Number(r.reps);
+      if (!Number.isFinite(w) || w <= 0 || !Number.isInteger(reps) || reps <= 0) return;
       const vel = parseFloat(r.vel) || null;
       onLog({ exercise: presc.exercise, mode: "weight", weight: w, reps, rpe: r.rpe, vel });
       if (vel && presc.velMin && presc.velMax) {
@@ -1829,33 +1829,34 @@ function FreeLog({ exercises, custom, onLog, onAddExercise, bare }) {
   const [msg, setMsg] = useState(null);
 
   const submit = () => {
-    onAddExercise(name.trim());
+    if (!name.trim()) return;
     if (meta.mode === "weight") {
-      const w = parseFloat(weight), r = parseInt(reps, 10);
-      if (!w || !r) return;
+      const w = parseFloat(weight), r = Number(reps);
+      if (!Number.isFinite(w) || w <= 0 || !Number.isInteger(r) || r <= 0) return;
       onLog({ exercise: name, mode: "weight", weight: w, reps: r });
       setMsg(`${name} — ${w} lb × ${r}`);
       setWeight(""); setReps("");
     } else if (meta.mode === "reps") {
-      const r = parseInt(reps, 10);
-      if (!r) return;
+      const r = Number(reps);
+      if (!Number.isInteger(r) || r <= 0) return;
       onLog({ exercise: name, mode: "reps", reps: r });
       setMsg(`${name} — ${r} reps`);
       setReps("");
     } else if (meta.mode === "sprint") {
       const s = parseFloat(secs);
-      if (!s) return;
+      if (!Number.isFinite(s) || s <= 0) return;
       const mph = toMph(meta.dist, meta.unit, s);
       onLog({ exercise: name, mode: "sprint", seconds: s, dist: meta.dist, unit: meta.unit });
       setMsg(`${name} — ${s.toFixed(2)}s · ${mph.toFixed(1)} mph`);
       setSecs("");
     } else {
       const total = (parseFloat(feet) || 0) * 12 + (parseFloat(inches) || 0);
-      if (!total) return;
+      if (!Number.isFinite(total) || total <= 0) return;
       onLog({ exercise: name, mode: "measure", value: total, unit: "in" });
       setMsg(`${name} — ${fmtHeight(total)}`);
       setFeet(""); setInches("");
     }
+    onAddExercise(name.trim());
     setTimeout(() => setMsg(null), 3000);
   };
 
@@ -5983,20 +5984,20 @@ function LogEditor({ log, meta, onSave, onDelete, onClose }) {
 
   const save = () => {
     if (log.mode === "weight") {
-      const w = parseFloat(weight), r = parseInt(reps, 10);
-      if (!w || !r) return;
+      const w = parseFloat(weight), r = Number(reps);
+      if (!Number.isFinite(w) || w <= 0 || !Number.isInteger(r) || r <= 0) return;
       onSave({ weight: w, reps: r, rpe: rpe ? parseInt(rpe, 10) : null, vel: parseFloat(vel) || null });
     } else if (log.mode === "reps") {
-      const r = parseInt(reps, 10);
-      if (!r) return;
+      const r = Number(reps);
+      if (!Number.isInteger(r) || r <= 0) return;
       onSave({ reps: r, rpe: rpe ? parseInt(rpe, 10) : null });
     } else if (log.mode === "sprint") {
       const s = parseFloat(secs);
-      if (!s) return;
+      if (!Number.isFinite(s) || s <= 0) return;
       onSave({ seconds: s });
     } else {
       const total = (parseFloat(ft) || 0) * 12 + (parseFloat(inch) || 0);
-      if (!total) return;
+      if (!Number.isFinite(total) || total <= 0) return;
       onSave({ value: total });
     }
   };
@@ -16377,6 +16378,10 @@ export default function App() {
     const { [id]: _m, ...restMaxes } = maxes; persist("maxes", restMaxes, setMaxes);
     const { [id]: _cm, ...restComments } = comments; persist("comments", restComments, setComments);
     const { [id]: _fl, ...restFuel } = fuelLogs; persist("fuelLogs", restFuel, setFuelLogs);
+    const { [id]: _a, ...restAttendance } = attendance; persist("attendance", restAttendance, setAttendance);
+    const { [id]: _i, ...restInjuries } = injuries; persist("injuries", restInjuries, setInjuries);
+    const { [id]: _w, ...restConcerns } = weightConcerns; persist("weightConcerns", restConcerns, setWeightConcerns);
+    persist("prFeed", prFeed.filter((entry) => entry.studentId !== id), setPrFeed);
   };
 
   /* ---- teachers ---- */
@@ -16434,9 +16439,20 @@ export default function App() {
       }
       if (original !== clean.name) {
         // keep logs and prescriptions pointing at the renamed movement
-        const relabel = (o) => Object.fromEntries(Object.entries(o).map(([k, arr]) =>
-          [k, arr.map((l) => (l.exercise === original ? { ...l, exercise: clean.name } : l))]));
-        persist("logs", relabel(logs), setLogs);
+        for (const [personId, entries] of Object.entries(logs)) {
+          if (entries.some((entry) => entry.exercise === original)) {
+            persistLogShard(personId, (current) => current.map((entry) => entry.exercise === original ? { ...entry, exercise: clean.name } : entry));
+          }
+        }
+        const renamedMaxes = Object.fromEntries(Object.entries(maxes).map(([personId, values]) => {
+          const { [original]: previousMax, ...otherMaxes } = values;
+          return [personId, previousMax ? { ...otherMaxes, [clean.name]: previousMax } : values];
+        }));
+        persist("maxes", renamedMaxes, setMaxes);
+        persist("testingDays", testingDays.map((day) => ({ ...day, exercises: day.exercises.map((name) => name === original ? clean.name : name) })), setTestingDays);
+        if (LIBRARY.some((entry) => entry.name === original) && !hiddenBuiltins.includes(original)) {
+          persist("hiddenBuiltins", [...hiddenBuiltins, original], setHiddenBuiltins);
+        }
         persist("programs", programs.map((p) => ({
           ...normalizeProgram(p),
           blocks: normalizeProgram(p).blocks.map((b) => ({

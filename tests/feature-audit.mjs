@@ -1,0 +1,116 @@
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+import { JSDOM } from 'jsdom';
+
+const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
+for (const key of ['window','document','HTMLElement','Element','Node','Event','MouseEvent','File','FileReader']) globalThis[key] = dom.window[key];
+Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.requestAnimationFrame = callback => setTimeout(callback, 0);
+globalThis.cancelAnimationFrame = clearTimeout;
+dom.window.HTMLElement.prototype.scrollIntoView = () => {};
+const React = await import('react');
+const { render, cleanup, fireEvent, screen, act } = await import('@testing-library/react');
+let source = readFileSync('src/App.jsx', 'utf8');
+const exported = [...source.matchAll(/^function (\w+)\(/gm)].map(match => match[1]);
+source += '\nexport { ' + [...exported, 'LIBRARY', 'today', 'addDays', 'exMeta'].join(', ') + ' };';
+source = source.replace('  // Keep the signed-in records fresh', '  globalThis.__auditState = { db, handlers: { ...handlers, saveCheckIn, saveComment, updateLog, deleteLog, reportInjury }, setView, setStudent, setTeacher };\n  // Keep the signed-in records fresh');
+await build({ stdin: { contents: source, loader: 'jsx', resolveDir: process.cwd() }, bundle: true, platform: 'node', format: 'esm', packages: 'external', outfile: 'tests/.audit-app.mjs' });
+const app = await import('./.audit-app.mjs');
+mkdirSync('../../work',{recursive:true});
+const results = [];
+const warnings = [];
+const originalError = console.error;
+console.error = (...args) => { warnings.push(args.map(String).join(' ')); };
+const store = new Map();
+window.storage = { async get(key) { return store.has(key) ? { key, value: store.get(key) } : null; }, async set(key,value) { store.set(key,value); return {key,value}; }, async delete(key) { store.delete(key); return {key,deleted:true}; } };
+const state = () => globalThis.__auditState;
+const saved = key => JSON.parse(store.get('sw3:' + key) || 'null');
+async function check(name, action, kind = 'state/persistence') {
+  try { await action(); results.push({ name, status: 'PASS', kind }); }
+  catch(error) { results.push({ name, status: 'FAIL', kind, error: error.message.slice(0,500) }); }
+}
+async function invoke(name, ...args) { await act(async () => { state().handlers[name](...args); }); }
+const now = app.today();
+await act(async () => render(React.createElement(app.default)));
+await check('First teacher and coach access code', async () => { await invoke('addTeacher','Audit Coach','1357',false,'audit-coaches'); assert.equal(saved('teachers')[0].name,'Audit Coach'); assert.equal(saved('teacherCode'),'audit-coaches'); });
+const teacherId = state().db.teachers[0].id;
+await check('Create class and class join code', async () => { await invoke('addClass',teacherId,'Audit Class'); await invoke('patchClass',state().db.classes[0].id,{joinCode:'AUDIT'}); assert.equal(saved('classes')[0].joinCode,'AUDIT'); });
+const classId = state().db.classes[0].id;
+await check('Create training group', async () => { await invoke('addGroup',classId,'Audit Group'); assert.equal(saved('groups')[0].name,'Audit Group'); });
+const groupId = state().db.groups[0].id;
+await check('Bulk add preserves every student', async () => { await act(async () => { for(let i=1;i<=4;i++) state().handlers.addStudent({name:'Audit Student '+i,classId,groupId,pin:'2468',gradYear:2028,gender:'male'},false); }); assert.equal(saved('students').length,4); });
+const studentId = state().db.students[0].id;
+await check('Profile updates preserve back-to-back patches', async () => { await act(async () => { state().handlers.patchStudent(studentId,{heightIn:70}); state().handlers.patchStudent(studentId,{weightGoal:170}); }); const s=saved('students')[0]; assert.equal(s.heightIn,70); assert.equal(s.weightGoal,170); });
+await check('Weight/reps/sprint/measurement logs persist in person shard', async () => { await act(async () => { for (const entry of [{exercise:'Back Squat',mode:'weight',weight:135,reps:5},{exercise:'Push-Up',mode:'reps',reps:20},{exercise:'20 Yard Dash',mode:'sprint',seconds:3,dist:20,unit:'yd'},{exercise:'Broad Jump',mode:'measure',value:84,unit:'in'}]) state().handlers.addLog(studentId,entry); }); assert.equal(saved('logs:'+studentId).length,4); });
+await check('Edit and delete a training log', async () => { const id=state().db.logs[studentId][0].id; await invoke('updateLog',studentId,id,{weight:145}); assert.equal(saved('logs:'+studentId)[0].weight,145); const second=state().db.logs[studentId][1].id; await invoke('deleteLog',studentId,second); assert.equal(saved('logs:'+studentId).length,3); });
+await check('Daily readiness and bodyweight check-in upsert', async () => { await invoke('saveCheckIn',studentId,{date:now,answers:{sleep:4,energy:4,soreness:4,stress:4},score:75,bodyweight:165}); await invoke('saveCheckIn',studentId,{date:now,answers:{sleep:5,energy:4,soreness:4,stress:4},score:81,bodyweight:166}); assert.equal(saved('checkins')[studentId].length,1); assert.equal(saved('checkins')[studentId][0].bodyweight,166); });
+await check('Training notes upsert', async () => { await invoke('saveComment',studentId,now,'Test note'); await invoke('saveComment',studentId,now,'Updated note'); assert.equal(saved('comments')[studentId][0].text,'Updated note'); assert.equal(saved('comments')[studentId].length,1); });
+await check('Coach manual training max', async () => { await invoke('setMax',studentId,'Back Squat',200); assert.equal(saved('maxes')[studentId]['Back Squat'].value,200); });
+await check('Food and hydration add/delete', async () => { await invoke('addFuelFood',studentId,now,'breakfast',{text:'Audit oats',calories:150,protein:5,carbs:27,fat:3}); await invoke('addWater',studentId,now,16); let rec=saved('fuelLogs')[studentId][0]; assert.equal(rec.foods.length,1); assert.equal(rec.water[0].oz,16); await invoke('deleteFuelFood',studentId,now,rec.foods[0].id); await invoke('deleteWater',studentId,now,rec.water[0].id); rec=saved('fuelLogs')[studentId][0]; assert.equal(rec.foods.length,0); assert.equal(rec.water.length,0); });
+await check('Injury reports and acknowledgement', async () => { await invoke('reportInjury',studentId,{bodyPart:'Knee',note:'Audit only'}); await invoke('ackInjury',studentId,saved('injuries')[studentId][0].id); assert.equal(saved('injuries')[studentId][0].status,'ack'); });
+await check('Weight-goal concerns and acknowledgement', async () => { await invoke('flagWeightConcern',studentId,{currentWeight:166,goalWeight:120}); await invoke('ackWeightConcern',studentId,saved('weightConcerns')[studentId][0].id); assert.equal(saved('weightConcerns')[studentId][0].status,'ack'); });
+await check('Attendance mark/change', async () => { await invoke('markAttendance',studentId,now,true); await invoke('markAttendance',studentId,now,false); assert.equal(saved('attendance')[studentId].length,1); assert.equal(saved('attendance')[studentId][0].present,false); });
+const session = app.normalizeProgram({id:'audit-session',name:'Audit Session',blocks:[{id:'block',category:'Strength/Power',exercises:[{id:'ex',exercise:'Back Squat',sets:3,reps:5,metric:'weight',load:135}]}]});
+await check('Session create/update', async () => { await invoke('saveProgram',session); await invoke('saveProgram',{...session,name:'Audit Session Revised'}); assert.equal(saved('programs').length,1); assert.equal(saved('programs')[0].name,'Audit Session Revised'); });
+await check('Bulk import and repeating schedules preserve all entries', async () => { await act(async () => { for(let i=0;i<5;i++){ state().handlers.saveProgram({...session,id:'bulk-'+i}); state().handlers.assign({id:'date-'+i,date:app.addDays(now,i*7),groupIds:[groupId],programId:'bulk-'+i}); } }); assert.equal(saved('programs').length,6); assert.equal(saved('schedule').length,5); });
+await check('Schedule repoint and remove', async () => { await invoke('repointSchedule','date-0',session.id); assert.equal(saved('schedule')[0].programId,session.id); await invoke('unassign','date-4'); assert.equal(saved('schedule').length,4); });
+await check('Multi-week cycle create/apply/delete', async () => { const cycle={id:'cycle',name:'Audit cycle',items:[{dayOffset:1,programId:session.id},{dayOffset:3,programId:session.id}]}; await invoke('saveCycle',cycle); await invoke('applyCycle',cycle,now,[groupId]); assert.equal(saved('schedule').length,6); await invoke('deleteCycle','cycle'); assert.equal(saved('cycles').length,0); });
+await check('Goals create/edit/delete', async () => { await invoke('saveGoal',{id:'goal',teacherId,name:'Audit',type:'sets',target:100}); await invoke('saveGoal',{id:'goal',teacherId,name:'Audit revised',type:'sets',target:200}); assert.equal(saved('goals').length,1); await invoke('deleteGoal','goal'); assert.equal(saved('goals').length,0); });
+await check('Announcements create/delete', async () => { await invoke('saveAnnouncement',{id:'announcement',teacherId,text:'Audit only',date:now}); assert.equal(saved('announcements').length,1); await invoke('deleteAnnouncement','announcement'); assert.equal(saved('announcements').length,0); });
+await check('Testing day enable/disable', async () => { await invoke('setTestingDay',now,['Back Squat'],true); assert.equal(saved('testingDays').length,1); await invoke('setTestingDay',now,[],false); assert.equal(saved('testingDays').length,0); });
+await check('PR feed persists', async () => { await invoke('recordPR',studentId,{exercise:'Back Squat',display:'145 x 5'}); assert.equal(saved('prFeed')[0].studentId,studentId); });
+await check('Staff profile and substitute access code', async () => { await invoke('patchTeacher',teacherId,{subCode:'audit-sub',heightIn:70}); assert.equal(saved('teachers')[0].subCode,'audit-sub'); });
+await check('Staff personal schedule create/delete', async () => { await invoke('assignPersonal',teacherId,{id:'personal',date:now,programId:session.id}); assert.equal(saved('personalSchedule')[teacherId].length,1); await invoke('unassignPersonal',teacherId,'personal'); assert.equal(saved('personalSchedule')[teacherId].length,0); });
+await check('Custom exercise create/update/delete', async () => { await invoke('saveExercise',{name:'Audit Lift',mode:'weight',group:'Other'}); await invoke('saveExercise',{name:'Audit Lift',mode:'weight',group:'Upper'},'Audit Lift'); assert.equal(saved('custom')[0].group,'Upper'); await invoke('deleteExercise','Audit Lift'); assert.equal(saved('custom').length,0); });
+await check('Built-in exercise hide/restore', async () => { await invoke('hideExercise','Back Squat'); assert.ok(!state().db.exercises.includes('Back Squat')); await invoke('restoreExercise','Back Squat'); assert.ok(state().db.exercises.includes('Back Squat')); });
+const fixture = structuredClone(state().db);
+writeFileSync('../../work/audit-fixture.json',JSON.stringify([...store]));
+const actions = new Proxy({}, { get: () => () => {} });
+cleanup();
+async function ui(name, component, props, tabs=[]) {
+  await check(name, async () => { await act(async()=>render(React.createElement(component,props))); assert.ok(document.body.textContent.trim().length>0); for(const tab of tabs){ await act(async()=>fireEvent.click(screen.getByRole('button',{name:tab,exact:true}))); assert.ok(document.body.textContent.trim().length>0); } }, 'screen render/navigation');
+  cleanup();
+}
+const student=fixture.students[0],teacher=fixture.teachers[0];
+await ui('Coach: all eight top-level tabs',app.CoachView,{teacher,db:fixture,handlers:actions,onBack(){}},['Roster','Planner','Library','Athletes','Reports','My Log','Staff','Today']);
+await ui('Reports: all six report screens',app.ReportsTab,{db:fixture,teacherId,handlers:actions},['Group summary','Leaderboards','Volume','Attendance','Fuel report','% Improvement']);
+await ui('Staff log: training, progress, fuel, sessions',app.StaffLogView,{teacher,db:fixture,handlers:actions},['Progress','Fuel','Sessions','Train']);
+await ui('Student: training, progress, library, fuel, profile',app.StudentView,{student,db:fixture,onBack(){},onLog(){},onCheckIn(){},onComment(){},onAddExercise(){},onUpdateLog(){},onDeleteLog(){},onPatchStudent(){},onAddFuelFood(){},onDeleteFuelFood(){},onAddWater(){},onDeleteWater(){},onReportInjury(){},onNewPR(){},onFlagWeightConcern(){}},['Progress','Library','Fuel','Me','Training']);
+await ui('Substitute roster and scheduled sessions',app.SubView,{teacher,db:fixture,onBack(){},onMarkAttendance(){}});
+await ui('Athlete detail: history, maxes and nutrition',app.AthleteDetail,{student,db:fixture,onBack(){},onSetMax(){}});
+await ui('Session editor',app.SessionEditor,{db:fixture,value:session,onChange(){},onSave(){},onCancel(){}});
+await ui('Session presentation/TV',app.TVDisplay,{db:fixture,program:session,date:now,groupNames:['Audit Group'],onClose(){}});
+await ui('Leaderboard TV',app.LeaderboardTVDisplay,{db:fixture,teacherId,exercise:'Back Squat',mode:'absolute',splitGender:false,onClose(){}});
+await ui('Starter program picker',app.StarterProgramPicker,{db:fixture,teacherId,handlers:actions,onDone(){},defaultDate:now,defaultGroupIds:[groupId]});
+await ui('Training cycle builder',app.CycleBuilder,{db:fixture,teacherId,handlers:actions});
+await ui('Exercise library editor',app.ExerciseLibrary,{db:fixture,onSaveExercise(){},onDeleteExercise(){},onHideExercise(){},onRestoreExercise(){}});
+await check('Free log rejects negative weight', async()=>{ let calls=[]; await act(async()=>render(React.createElement(app.FreeLog,{exercises:fixture.exercises,custom:[],onLog:entry=>calls.push(entry),onAddExercise(){}}))); const inputs=document.querySelectorAll('input'); await act(async()=>{fireEvent.change(inputs[1],{target:{value:'-100'}}); fireEvent.change(inputs[2],{target:{value:'5'}});}); await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Save',exact:true}))); assert.equal(calls.length,0,'Negative weight was accepted'); },'input validation'); cleanup();
+await act(async()=>render(React.createElement(app.default)));
+await check('Renaming exercise keeps logs in shards (no legacy overwrite)', async()=>{ await invoke('saveExercise',{name:'Audit Squat',mode:'weight',group:'Lower'},'Back Squat'); assert.equal(saved('logs:'+studentId)[0].exercise,'Audit Squat'); assert.equal(saved('logs'),null); });
+await check('Delete student cleans attendance and safety reports',async()=>{await invoke('deleteStudent',studentId); assert.equal(saved('logs:'+studentId),null); assert.equal(saved('attendance')?.[studentId],undefined); assert.equal(saved('injuries')?.[studentId],undefined); assert.equal(saved('weightConcerns')?.[studentId],undefined); });
+cleanup();
+await check('Readiness high end means fully ready',async()=>{let result; await act(async()=>render(React.createElement(app.CheckInCard,{onSave:value=>result=value}))); for(const button of screen.getAllByRole('button',{name:'5',exact:true})) await act(async()=>fireEvent.click(button)); const button=screen.getAllByRole('button').find(button=>/start training/i.test(button.textContent)); assert.ok(button); await act(async()=>fireEvent.click(button)); assert.equal(result.score,100);},'form interaction'); cleanup();
+await check('Readiness low end means low readiness',async()=>{let result; await act(async()=>render(React.createElement(app.CheckInCard,{onSave:value=>result=value}))); for(const button of screen.getAllByRole('button',{name:'1',exact:true})) await act(async()=>fireEvent.click(button)); const button=screen.getAllByRole('button').find(button=>/start training/i.test(button.textContent)); await act(async()=>fireEvent.click(button)); assert.equal(result.score,0);},'form interaction'); cleanup();
+await check('PIN pad submits exactly four digits',async()=>{let pin;await act(async()=>render(React.createElement(app.PinPad,{onSubmit:value=>pin=value,onCancel(){}}))); for(const digit of '2468') await act(async()=>fireEvent.click(screen.getByRole('button',{name:digit,exact:true}))); await act(async()=>new Promise(resolve=>setTimeout(resolve,160)));assert.equal(pin,'2468');},'form interaction');cleanup();
+await check('First teacher form creates name, PIN and coach code',async()=>{let args;await act(async()=>render(React.createElement(app.SignIn,{db:{...fixture,teachers:[]},loading:false,onAddTeacher:(...values)=>args=values}))); await act(async()=>fireEvent.click(screen.getByRole('button',{name:'I’m a teacher'}))); const inputs=screen.getAllByRole('textbox'); await act(async()=>{for(const [index,value] of ['Test Coach','1234','coaches'].entries()) fireEvent.change(inputs[index],{target:{value}});}); await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Create and sign in'}))); assert.deepEqual(args,['Test Coach','1234',true,'coaches']);},'form interaction');cleanup();
+await check('Substitute code signs in the correct teacher scope',async()=>{let person;await act(async()=>render(React.createElement(app.SignIn,{db:fixture,loading:false,onSub:value=>person=value}))); await act(async()=>fireEvent.click(screen.getByRole('button',{name:'I’m a substitute'}))); await act(async()=>fireEvent.change(screen.getByPlaceholderText('Substitute code'),{target:{value:'audit-sub'}})); await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Continue'}))); assert.equal(person.id,teacher.id);},'form interaction');cleanup();
+await check('Exercise free logging saves a valid lifting set',async()=>{let entry;await act(async()=>render(React.createElement(app.FreeLog,{exercises:fixture.exercises,custom:[],onLog:value=>entry=value,onAddExercise(){}}))); await act(async()=>{fireEvent.change(screen.getByRole('textbox',{name:'Weight (lb)'}),{target:{value:'135'}});fireEvent.change(screen.getByRole('textbox',{name:'Reps'}),{target:{value:'5'}});});await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Save',exact:true})));assert.equal(entry.weight,135);assert.equal(entry.reps,5);},'form interaction');cleanup();
+for(const mode of ['weight','reps','sprint','measure']){
+ await check('Log editor validates and saves '+mode,async()=>{let edited;const log={id:'log',date:now,exercise:'Audit',mode,weight:100,reps:5,seconds:3,value:80,dist:20,unit:'yd'};await act(async()=>render(React.createElement(app.LogEditor,{log,meta:{mode},onSave:value=>edited=value,onDelete(){},onClose(){}})));const button=screen.getAllByRole('button').find(button=>/save/i.test(button.textContent));assert.ok(button);await act(async()=>fireEvent.click(button));assert.ok(edited);},'form interaction');cleanup();
+}
+await check('Spreadsheet CSV and TSV preserve quoted cells',()=>{assert.equal(app.toDelimited([['Name','Note'],['A,B','He said "hi"']],','),'Name,Note\n"A,B","He said ""hi"""');assert.ok(app.toDelimited([['A','B']],'\t').includes('\t'));},'calculation');
+await check('Clipboard export calls clipboard with TSV',async()=>{let copied;Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>copied=value}});await act(async()=>render(React.createElement(app.ExportPanel,{rows:[['Name','Sets'],['Audit',3]],filename:'audit.csv'})));await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Copy for Sheets'})));assert.ok(copied.includes('Audit\t3'));},'form interaction');cleanup();
+await check('1RM and plate calculations',()=>{assert.equal(app.epley1RM(100,10),133);assert.equal(app.epley1RM(225,1),225);assert.deepEqual(app.plateStack(225).plates,[{size:45,count:2}]);assert.equal(app.plateStack(226).exact,false);},'calculation');
+await check('Sprint conversion agrees across feet/yards/meters',()=>{assert.ok(Math.abs(app.toMph(30,'ft',3)-app.toMph(10,'yd',3))<1e-8);assert.equal(app.toFps(30,'ft',3),10);assert.equal(app.distToMeters(10,'yd'),9.144);},'calculation');
+await check('School year and graduation grade boundary',()=>{assert.equal(app.schoolYearStart('2026-06-01'),2025);assert.equal(app.schoolYearStart('2026-09-01'),2026);assert.equal(app.gradeIn(2028,2026),11);},'calculation');
+await check('Workout streak counts unique consecutive dates',()=>{assert.equal(app.computeStreak([{date:now},{date:now},{date:app.addDays(now,-1)}]),2);},'calculation');
+await check('Food library search returns known foods',()=>{assert.ok(app.foodMatches('banana').length>0);assert.ok(app.foodMatches('zzzz-audit-no-such-food').length===0);},'calculation');
+await check('Legacy session normalization preserves prescriptions',()=>{const normalized=app.normalizeProgram({id:'legacy',exercises:[{exercise:'Back Squat',sets:3,reps:5,pct:75}]});assert.equal(normalized.blocks[0].exercises[0].metric,'pct');assert.equal(normalized.blocks[0].exercises[0].sets,3);},'calculation');
+console.error=originalError;
+mkdirSync('../../work',{recursive:true});
+writeFileSync('../../work/feature-audit.json',JSON.stringify({results,warnings},null,2));
+for (const result of results) console.log(result.status+' '+result.name+(result.error?' — '+result.error.split('\n')[0]:''));
+console.log(`TOTAL ${results.length}, PASS ${results.filter(x=>x.status==='PASS').length}, FAIL ${results.filter(x=>x.status==='FAIL').length}`);
+process.exitCode=results.some(x=>x.status==='FAIL')?1:0;

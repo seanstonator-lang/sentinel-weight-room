@@ -1,0 +1,40 @@
+import { build } from 'esbuild';
+import { JSDOM } from 'jsdom';
+import assert from 'node:assert/strict';
+const dom = new JSDOM('<html><body></body></html>', {url:'http://localhost/'});
+for (const name of ['window','document','HTMLElement','Element','Node']) globalThis[name]=dom.window[name];
+Object.defineProperty(globalThis,'navigator',{value:dom.window.navigator,configurable:true});
+globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+const React=await import('react');
+const {render,act,cleanup,screen}=await import('@testing-library/react');
+await build({entryPoints:['src/server-storage.jsx'],bundle:true,platform:'node',format:'esm',packages:'external',outfile:'tests/.audit-storage.mjs'});
+const {ServerGate}=await import('./.audit-storage.mjs');
+const rows=new Map([['sw3:checkins',{key:'sw3:checkins',value:'{}',revision:1}]]);
+let conflicts=0;
+globalThis.fetch=async (url,options={})=>{
+  const path=url.slice(4),method=options.method||'GET';
+  const response=(status,body)=>({ok:status<400,status,json:async()=>structuredClone(body)});
+  if(path==='/records')return response(200,{records:[...rows.values()]});
+  const key=decodeURIComponent(path.slice('/records/'.length));
+  const current=rows.get(key)||{key,value:null,revision:0};
+  if(method==='GET')return response(200,current);
+  const body=JSON.parse(options.body);
+  if(body.revision!==current.revision){conflicts++;return response(409,{error:'Conflict'});}
+  const row={key,value:method==='DELETE'?null:body.value,revision:current.revision+1};
+  rows.set(key,row);return response(200,row);
+};
+async function client(){await act(async()=>render(React.createElement(ServerGate,null,React.createElement('span',null,'Ready'))));return window.storage;}
+const a=await client(),b=await client();
+await act(async()=>{await Promise.all([a.set('sw3:checkins',JSON.stringify({a:[{id:'a1',score:80}]})),b.set('sw3:checkins',JSON.stringify({b:[{id:'b1',score:90}]}))]);});
+assert.equal(conflicts,1);assert.equal(Object.keys(JSON.parse(rows.get('sw3:checkins').value)).length,2);
+await act(async()=>{await b.set('sw3:checkins',JSON.stringify({b:[{id:'b1',score:91}]}));});
+assert.equal(JSON.parse(rows.get('sw3:checkins').value).a[0].score,80);
+await act(async()=>{await Promise.all([b.set('sw3:checkins',JSON.stringify({b:[{id:'b1',score:92}]})),b.set('sw3:checkins',JSON.stringify({b:[{id:'b1',score:93}]}))]);});
+assert.equal(JSON.parse(rows.get('sw3:checkins').value).b[0].score,93);
+const c=await client(),d=await client();
+const snapshot=JSON.parse(rows.get('sw3:checkins').value);
+await act(async()=>{await c.set('sw3:checkins',JSON.stringify({...snapshot,a:[{id:'a1',score:70}]}));});
+await act(async()=>{await assert.rejects(d.set('sw3:checkins',JSON.stringify({...snapshot,a:[{id:'a1',score:60}]})),/same field/);});
+assert.equal(JSON.parse(rows.get('sw3:checkins').value).a[0].score,70);
+assert.ok(screen.getByText('Changes paused'));
+cleanup();console.log('PASS: real storage adapter retries 409, merges independent students, preserves remote data across queued writes, and pauses conflicting edits.');
