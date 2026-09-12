@@ -2,6 +2,10 @@
 
 React application packaged from the supplied Sentinel Weight Room JSX file.
 
+## Raspberry Pi backend
+
+See [Raspberry Pi setup](RASPBERRY_PI.md) for the Docker Compose deployment, shared SQLite storage, server login, HTTPS configuration, updates, and backups. The Pi hosts both the website and API. The GitHub Pages build continues to use browser-local storage.
+
 ## Run locally
 
 ```sh
