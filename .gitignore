@@ -1,5 +1,6 @@
 node_modules/
 dist/
 .env
+.tunnel.env
 data/
 backups/
