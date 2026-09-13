@@ -14,8 +14,15 @@ Fixes: corrected reversed soreness/stress scoring and feet-based sprint conversi
 
 Remaining before dependable school deployment:
 - Permanent domain and named tunnel setup. Current public tunnel is temporary and its address can change.
-- Backend-enforced student/coach permissions. Current shared server password grants access to all records; individual PINs only control the interface.
+- Individual student/teacher server sign-in was added September 13. Students can read and update their own personal records; teachers retain school-wide management; substitutes can mark attendance for the assigned teacher’s classes. The long password is now administrator-only. Account isolation, rejected cross-student changes, logout, rate limiting, and code-reset session invalidation have automated coverage.
 - Automatic off-device backups and a restore drill. A pre-update database snapshot exists on the Pi, but the same SD card is not a separate backup.
 - School-network and intended-device acceptance checks, plus real class-size load testing.
 
 Not exhaustively verified: every timer/circuit variant, image uploads, print/download behavior on every browser, all program import formats, accessibility, and every malformed input. Passing these tests does not establish that every feature is 100% correct. A domain alone does not address the remaining items above.
+
+
+## Individual login update — September 13
+
+Verified in a browser: student signed in directly using an existing individual code, saved a readiness check-in, signed out, and teacher signed in using an individual code and saw that check-in. No shared server password was entered. Seven backend tests and all 59 application checks passed.
+
+Roster and staff creation are available to signed-in teachers. On the public login screen, people select an existing account; self-enrollment and unauthenticated station mode are not exposed. Students receive only their own personal records, so school-wide leaderboards and team totals should be viewed from the coach/TV view. The administrator can still use the maintenance password. These access changes do not replace the remaining domain, backup, and school acceptance work.

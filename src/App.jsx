@@ -6584,7 +6584,7 @@ function StudentView({ student, db, onBack, onLog, onCheckIn, onComment, onAddEx
                   ["Class", klass ? klass.name : "Not assigned"],
                   ["Group", group ? group.name : "Not assigned"],
                   ["Graduating", student.gradYear || "Not set"],
-                  ["Sign-in code", student.pin],
+                  ["Sign-in code", student.pin || "Ask your teacher if you need a reset"],
                 ].map(([k, v]) => (
                   <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 12, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
                     <span style={{ color: C.textDim }}>{k}</span>
@@ -16313,6 +16313,10 @@ export default function App() {
       }
       setLogs(logsObj);
 
+      const identity = window.sentinelIdentity;
+      if (identity?.role === 'student') { setStudent((s || []).find(p => p.id === identity.id)); setView('student'); }
+      if (identity?.role === 'sub') { setSubTeacher((t || []).find(p => p.id === identity.id)); setView('sub'); }
+      if (identity?.role === 'teacher') { setTeacher((t || []).find(p => p.id === identity.id)); setView('coach'); }
       setLoading(false);
     })();
   }, []);
@@ -16717,7 +16721,7 @@ export default function App() {
       {view === "student" && liveStudent && (
         <StudentView
           student={liveStudent} db={db}
-          onBack={() => { setStudent(null); setView("signin"); }}
+          onBack={() => { if (window.sentinelLogout) { window.sentinelLogout().catch(() => window.location.reload()); return; } setStudent(null); setView("signin"); }}
           onLog={addLog} onCheckIn={saveCheckIn} onComment={saveComment} onAddExercise={addExercise}
           onUpdateLog={updateLog} onDeleteLog={deleteLog} onPatchStudent={patchStudent}
           onAddFuelFood={addFuelFood} onDeleteFuelFood={deleteFuelFood}
@@ -16730,14 +16734,14 @@ export default function App() {
       {view === "coach" && liveTeacher && (
         <CoachView
           teacher={liveTeacher} db={db}
-          onBack={() => { setTeacher(null); setView("signin"); }}
+          onBack={() => { if (window.sentinelLogout) { window.sentinelLogout().catch(() => window.location.reload()); return; } setTeacher(null); setView("signin"); }}
           handlers={handlers}
         />
       )}
       {view === "sub" && liveSubTeacher && (
         <SubView
           teacher={liveSubTeacher} db={db}
-          onBack={() => { setSubTeacher(null); setView("signin"); }}
+          onBack={() => { if (window.sentinelLogout) { window.sentinelLogout().catch(() => window.location.reload()); return; } setSubTeacher(null); setView("signin"); }}
           onMarkAttendance={markAttendance}
         />
       )}

@@ -1,3 +1,4 @@
+import { projectRecord, applyStudentWrite } from './access.mjs';
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -12,6 +13,7 @@ export function createApp({ databasePath, password, publicOrigin, secureCookie =
   const db = new DatabaseSync(databasePath);
   db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, value TEXT, revision INTEGER NOT NULL);');
   const sessions = new Map();
+  const record = key => JSON.parse(db.prepare('SELECT value FROM records WHERE key = ?').get('sw3:'+key)?.value || 'null');
   const attempts = new Map();
   const hash = value => createHash('sha256').update(value).digest();
   const expected = hash(password);
@@ -34,32 +36,58 @@ export function createApp({ databasePath, password, publicOrigin, secureCookie =
       if (url.pathname === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true });
       if (url.pathname.startsWith('/api/')) {
         if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== origin) return send(res, 403, { error: 'Origin rejected.' });
+        if (url.pathname === '/api/accounts' && req.method === 'GET') return send(res,200, {
+          students:(record('students')||[]).map(({id,name})=>({id,name})),
+          teachers:(record('teachers')||[]).map(({id,name})=>({id,name}))
+        });
         if (url.pathname === '/api/login' && req.method === 'POST') {
-          const ip = req.socket.remoteAddress;
+          const body = await readBody(req);
+          if(!body || !['student','teacher','sub',undefined].includes(body.role))return send(res,400,{error:'Invalid account type.'});
+          const ip = req.socket.remoteAddress + ':' + String(body.role || 'admin') + ':' + String(body.role ? body.id || '' : '').slice(0,100);
           const now = Date.now();
           for (const [key, value] of attempts) if (value.until <= now) attempts.delete(key);
-          for (const [key, value] of sessions) if (value <= now) sessions.delete(key);
+          for (const [key, value] of sessions) if (value.expires <= now) sessions.delete(key);
           const entry = attempts.get(ip) || { count: 0, until: now + 900000 };
           if (entry.count >= 10) return send(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' });
-          const body = await readBody(req);
-          if (typeof body.password !== 'string' || !timingSafeEqual(hash(body.password), expected)) {
+          let identity={role:'admin'};
+          let valid=typeof body.password==='string' && timingSafeEqual(hash(body.password),expected);
+          if(body.role==='student'||body.role==='teacher'||body.role==='sub') {
+            const person=(record(body.role==='student'?'students':'teachers')||[]).find(p=>p.id===body.id);
+            valid=!!person && typeof body.pin==='string' && typeof (body.role==='sub'?person.subCode:person.pin)==='string' && timingSafeEqual(hash(body.pin),hash(body.role==='sub'?person.subCode:person.pin));
+            identity={role:body.role,id:person?.id,classId:person?.classId};
+          }
+          if (!valid) {
             entry.count++; attempts.set(ip, entry);
-            return send(res, 401, { error: 'Incorrect server password.' });
+            return send(res, 401, { error: 'Incorrect sign-in code.' });
           }
           attempts.delete(ip);
           if (sessions.size >= 10000) return send(res, 503, { error: 'Session capacity reached.' });
           const token = randomBytes(32).toString('hex');
-          sessions.set(token, now + 12 * 3600000);
+          sessions.set(token, {...identity,credential:hash(body.pin || body.password).toString('hex'),expires:now + 12 * 3600000});
           res.setHeader('Set-Cookie', `sentinel_session=${token}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=43200${secureCookie ? '; Secure' : ''}`);
-          return send(res, 200, { ok: true });
+          return send(res, 200, { ok: true, identity });
         }
         const token = req.headers.cookie?.split(';').map(x => x.trim()).find(x => x.startsWith('sentinel_session='))?.slice(17);
-        if (!token || (sessions.get(token) || 0) <= Date.now()) return send(res, 401, { error: 'Sign in to the server.' });
-        if (url.pathname === '/api/records' && req.method === 'GET') return send(res, 200, { records: db.prepare('SELECT key, value, revision FROM records').all() });
+        const session=sessions.get(token);
+        if (!session || session.expires <= Date.now()) return send(res, 401, { error: 'Sign in to Sentinel.' });
+        const identity={...session};
+        if(identity.role!=='admin') {
+          const person=(record(identity.role==='student'?'students':'teachers')||[]).find(p=>p.id===identity.id);
+          if(!person) {sessions.delete(token);return send(res,401,{error:'Account no longer available.'});}
+          if(session.credential!==hash(identity.role==='sub'?person.subCode||'':person.pin||'').toString('hex')) {sessions.delete(token);return send(res,401,{error:'Your code changed. Sign in again.'});}
+          identity.classId=person.classId;
+          if(identity.role==='sub') {
+            identity.classIds=(record('classes')||[]).filter(c=>c.teacherId===identity.id).map(c=>c.id);
+            identity.studentIds=(record('students')||[]).filter(p=>identity.classIds.includes(p.classId)).map(p=>p.id);
+          }
+        }
+        if(url.pathname==='/api/logout' && req.method==='POST') {sessions.delete(token);res.setHeader('Set-Cookie','sentinel_session=; Path=/api; HttpOnly; SameSite=Strict; Max-Age=0');return send(res,200,{ok:true});}
+
+        if (url.pathname === '/api/records' && req.method === 'GET') return send(res, 200, { identity:{role:identity.role,id:identity.id}, records: db.prepare('SELECT key, value, revision FROM records').all().map(row=>projectRecord(row,identity)).filter(row=>row.value!==null) });
         if (url.pathname.startsWith('/api/records/')) {
           const key = decodeURIComponent(url.pathname.slice('/api/records/'.length));
           if (!key || key.length > 250 || /[\x00-\x1f]/.test(key)) return send(res, 400, { error: 'Invalid key.' });
-          if (req.method === 'GET') return send(res, 200, db.prepare('SELECT key, value, revision FROM records WHERE key = ?').get(key) || { key, value: null, revision: 0 });
+          if (req.method === 'GET') return send(res, 200, projectRecord(db.prepare('SELECT key, value, revision FROM records WHERE key = ?').get(key) || { key, value: null, revision: 0 },identity));
           if (req.method === 'PUT' || req.method === 'DELETE') {
             const body = await readBody(req);
             if (!Number.isSafeInteger(body.revision) || body.revision < 0) return send(res, 400, { error: 'A revision is required.' });
@@ -67,12 +95,17 @@ export function createApp({ databasePath, password, publicOrigin, secureCookie =
               if (typeof body.value !== 'string') return send(res, 400, { error: 'Value must be JSON text.' });
               try { JSON.parse(body.value); } catch { return send(res, 400, { error: 'Value must be valid JSON.' }); }
             }
-            const current = db.prepare('SELECT revision FROM records WHERE key = ?').get(key);
+            const current = db.prepare('SELECT value, revision FROM records WHERE key = ?').get(key);
             if ((current?.revision || 0) !== body.revision) return send(res, 409, { error: 'Another device changed this record. Reload before editing again.' });
             const revision = body.revision + 1;
-            const value = req.method === 'DELETE' ? null : body.value;
+            let value = req.method === 'DELETE' ? null : body.value;
+            if(identity.role==='student'||identity.role==='sub') {
+              if(!key.startsWith('sw3:'))return send(res,403,{error:'Forbidden.'});
+              const result=applyStudentWrite(key,value===null?null:JSON.parse(value),JSON.parse(current?.value||'null'),identity,req.method);
+              value=result===null?null:JSON.stringify(result);
+            }
             db.prepare('INSERT INTO records(key,value,revision) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, revision=excluded.revision').run(key, value, revision);
-            return send(res, 200, { key, value, revision });
+            return send(res, 200, projectRecord({ key, value, revision },identity));
           }
         }
         return send(res, 404, { error: 'API route not found.' });

@@ -1,3 +1,4 @@
+import { AccountLogin } from './account-login.jsx';
 import React, { useEffect, useState } from 'react';
 import { mergeRecords } from './merge-records.js';
 
@@ -10,11 +11,12 @@ async function request(path, options = {}) {
 
 export function ServerGate({ children }) {
   const [ready, setReady] = useState(false);
-  const [password, setPassword] = useState('');
   const [message, setMessage] = useState('Connecting to the server…');
   const [failure, setFailure] = useState('');
   async function connect() {
-    const { records } = await request('/records');
+    const { records, identity } = await request('/records');
+    window.sentinelIdentity = identity;
+    window.sentinelLogout = async () => { await request('/logout',{method:'POST',body:'{}'}); window.location.reload(); };
     const cache = new Map(records.map(row => [row.key, row]));
     const readKeys = new Set();
     const revisions = new Map(records.map(row => [row.key, row.revision]));
@@ -65,5 +67,5 @@ export function ServerGate({ children }) {
   const panel = { minHeight: '100vh', background: '#1A0E2B', color: '#fff', fontFamily: 'system-ui', display: 'grid', placeItems: 'center', padding: 24, boxSizing: 'border-box' };
   if (failure) return <div style={panel}><div style={{ maxWidth: 480 }}><h1>Changes paused</h1><p>{failure}</p><p>Your last change may not have saved. Reload to fetch the server copy, then enter that change again.</p><button onClick={() => location.reload()}>Reload server data</button></div></div>;
   if (ready) return children;
-  return <div style={panel}><form style={{ maxWidth: 400, width: '100%' }} onSubmit={async event => { event.preventDefault(); setMessage('Connecting…'); try { await request('/login', { method: 'POST', body: JSON.stringify({ password }) }); setPassword(''); await connect(); } catch (error) { setMessage(error.message); } }}><h1>Sentinel server</h1><p>Enter the server access password to open the shared weight room.</p><label htmlFor="server-password">Server password</label><input id="server-password" type="password" autoComplete="current-password" required value={password} onChange={event => setPassword(event.target.value)} style={{ display: 'block', width: '100%', boxSizing: 'border-box', padding: 12, margin: '12px 0' }}/><button type="submit" style={{ padding: '12px 20px' }}>Connect</button><p role="status">{message}</p></form></div>;
+  return <div style={panel}><AccountLogin request={request} onLogin={connect} message={message} setMessage={setMessage}/></div>;
 }
