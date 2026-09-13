@@ -67,5 +67,5 @@ export function ServerGate({ children }) {
   const panel = { minHeight: '100vh', background: '#1A0E2B', color: '#fff', fontFamily: 'system-ui', display: 'grid', placeItems: 'center', padding: 24, boxSizing: 'border-box' };
   if (failure) return <div style={panel}><div style={{ maxWidth: 480 }}><h1>Changes paused</h1><p>{failure}</p><p>Your last change may not have saved. Reload to fetch the server copy, then enter that change again.</p><button onClick={() => location.reload()}>Reload server data</button></div></div>;
   if (ready) return children;
-  return <div style={panel}><AccountLogin request={request} onLogin={connect} message={message} setMessage={setMessage}/></div>;
+  return <div style={{...panel, padding: 0}}><AccountLogin request={request} onLogin={connect} message={message} setMessage={setMessage}/></div>;
 }

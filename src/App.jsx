@@ -16748,3 +16748,29 @@ export default function App() {
     </div>
   );
 }
+
+export function WelcomeScreen({ onRole }) {
+  const wrap = (children) => (
+    <div className="b" style={{ minHeight: "100vh", background: C.bg, color: C.text, display: "flex", flexDirection: "column", alignItems: "center", padding: "44px 18px 40px" }}>
+      <Helmet size={54} />
+      <div style={{ fontSize: 11, letterSpacing: 3.2, color: C.accent, fontWeight: 700, marginTop: 13, textTransform: "uppercase" }}>Sentinel Spartans</div>
+      <span className="d" style={{ fontSize: 32, textTransform: "uppercase", marginBottom: 26, lineHeight: 1.1 }}>Performance</span>
+      <div style={{ width: "100%", maxWidth: 440 }}><GlobalStyle />{children}</div>
+    </div>
+  );
+
+
+    return wrap(
+      <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+        <p style={{ color: C.textDim, fontSize: 14, textAlign: "center", margin: "0 0 8px", lineHeight: 1.55 }}>
+          Log your lifts, sprints, and check-ins. Your numbers follow you all four years.
+        </p>
+        <Button size="lg" icon={Dumbbell} full onClick={() => onRole("student")}>I&rsquo;m a student</Button>
+        <Button size="lg" variant="ghost" icon={Users} full onClick={() => onRole("teacher")}>I&rsquo;m a teacher</Button>
+        <Button size="lg" variant="ghost" icon={Copy} full onClick={() => onRole("sub")}>I&rsquo;m a substitute</Button>
+        <p style={{ fontSize: 11, color: C.steel, textAlign: "center", lineHeight: 1.6, marginTop: 10 }}>
+          Your code keeps your log off other students&rsquo; screens. Your teacher can see your training, check-ins, and body weight &mdash; that&rsquo;s the point of the class. Nothing here is a secure vault, so don&rsquo;t put anything in it you wouldn&rsquo;t hand your coach on paper.
+        </p>
+      </div>
+    );
+}
